@@ -169,6 +169,43 @@ def test_stale_version_and_push_guard(
     assert guarded.json()["error"]["code"] == "push_in_progress"
 
 
+def test_draft_mutations_are_blocked_while_push_is_in_progress(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    campaign = import_demo(client)
+    with session_factory() as session:
+        model = session.scalar(select(Campaign).where(Campaign.id == campaign["id"]))
+        assert model is not None
+        model.syncing = True
+        session.commit()
+
+    requests = [
+        client.post(
+            f"/api/campaigns/{campaign['id']}/draft/offers",
+            json={"offer_id": 104, "version": campaign["draft_version"]},
+        ),
+        client.delete(
+            f"/api/campaigns/{campaign['id']}/draft/offers/101"
+            f"?version={campaign['draft_version']}"
+        ),
+        client.post(
+            f"/api/campaigns/{campaign['id']}/draft/offers/101/bring-back",
+            json={"version": campaign["draft_version"]},
+        ),
+        client.post(
+            f"/api/campaigns/{campaign['id']}/draft/cancel",
+            json={"version": campaign["draft_version"]},
+        ),
+        client.post(f"/api/campaigns/{campaign['id']}/fetch"),
+    ]
+
+    assert [response.status_code for response in requests] == [409] * len(requests)
+    assert all(
+        response.json()["error"]["code"] == "push_in_progress"
+        for response in requests
+    )
+
+
 def test_zero_active_offers_cannot_be_pushed(client: TestClient) -> None:
     campaign = import_demo(client)
     version = campaign["draft_version"]

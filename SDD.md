@@ -29,16 +29,16 @@ Verified in the official Keitaro Admin API reference:
 - authentication uses `Api-Key` (Bearer is also supported);
 - campaigns are `GET/POST /admin_api/v1/campaigns`, and a campaign can carry `domain_id`, `group_id` and `traffic_source_id`;
 - campaign streams are read through `GET /admin_api/v1/campaigns/{id}/streams`;
+- streams are created through `POST /admin_api/v1/streams` with `campaign_id` in the body;
 - offers are read through `GET /admin_api/v1/offers`;
 - a stream is partially updated through `PUT /admin_api/v1/streams/{id}` and its schema contains `filters`, `offers`, `action_type`, `action_payload`, `state` and `updated_at`;
 - campaign creation requires at least `alias` and `name`.
 
-The public reference documents shapes but does not fully specify the accepted payload semantics for every Keitaro version. The following are isolated compatibility assumptions, not facts hidden in business code:
+The public reference documents shapes but does not fully specify the accepted payload semantics for every Keitaro version. A live smoke test against the supplied tracker verified these isolated compatibility settings:
 
-- stream creation uses `POST /campaigns/{campaign_id}/streams`;
 - the country filter is `{name: "country", mode: "accept", payload: ["US"]}`;
-- an external redirect stream uses `action_type: "http"` and string `action_payload`;
-- an offer stream uses `action_type: "offer"` and an `offers` array.
+- an external redirect stream uses `schema: "redirect"`, `action_type: "http"` and string `action_payload`;
+- an offer stream uses `schema: "landings"`, `action_type: "http"` and an `offers` array.
 
 Before real deployment, capture the successful payload from the target tracker's built-in Swagger or browser Network panel, then adjust only `KeitaroPayloadBuilder`. Keitaro itself recommends inspecting its Admin UI requests when parameters vary by version. The fake mode never pretends to prove compatibility with a real tracker.
 

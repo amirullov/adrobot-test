@@ -50,6 +50,22 @@ function showCreateError(error) {
   createStatus.textContent = error.message;
 }
 
+const createAttemptStorageKey = "adrobot-create-attempt";
+
+function creationAttempt(body) {
+  let attempt = null;
+  try {
+    attempt = JSON.parse(sessionStorage.getItem(createAttemptStorageKey));
+  } catch (_error) {
+    sessionStorage.removeItem(createAttemptStorageKey);
+  }
+  if (!attempt || attempt.body !== body || typeof attempt.key !== "string") {
+    attempt = {body, key: crypto.randomUUID()};
+    sessionStorage.setItem(createAttemptStorageKey, JSON.stringify(attempt));
+  }
+  return attempt;
+}
+
 createForm.addEventListener("submit", async event => {
   event.preventDefault();
   const button = createForm.querySelector("button[type=submit]");
@@ -57,16 +73,19 @@ createForm.addEventListener("submit", async event => {
   createStatus.className = "form-status";
   createStatus.textContent = "Creating campaign and two streams…";
   const values = new FormData(createForm);
+  const body = JSON.stringify({
+    name: values.get("name"),
+    country_code: values.get("country_code"),
+    offer_id: Number(values.get("offer_id")),
+  });
+  const attempt = creationAttempt(body);
   try {
     const result = await api("/api/campaigns", {
       method: "POST",
-      headers: {"Idempotency-Key": crypto.randomUUID()},
-      body: JSON.stringify({
-        name: values.get("name"),
-        country_code: values.get("country_code"),
-        offer_id: Number(values.get("offer_id")),
-      }),
+      headers: {"Idempotency-Key": attempt.key},
+      body,
     });
+    sessionStorage.removeItem(createAttemptStorageKey);
     location.assign(`/campaigns/${result.id}`);
   } catch (error) {
     showCreateError(error);

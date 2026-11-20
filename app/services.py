@@ -339,6 +339,7 @@ class CampaignService:
 
     def fetch(self, campaign_id: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
+        self._check_not_syncing(campaign)
         if campaign.draft is not None:
             raise ConflictError(
                 "dirty_draft",
@@ -361,6 +362,14 @@ class CampaignService:
                 details={"current_version": campaign.draft_version},
             )
 
+    @staticmethod
+    def _check_not_syncing(campaign: Campaign) -> None:
+        if campaign.syncing:
+            raise ConflictError(
+                "push_in_progress",
+                "A push is in progress. Wait for it to finish before editing.",
+            )
+
     def _save_draft(self, campaign: Campaign, rows: list[dict[str, Any]]) -> Campaign:
         rows = allocate_shares(rows)
         campaign.draft = None if rows == campaign.server_snapshot else rows
@@ -371,6 +380,7 @@ class CampaignService:
 
     def add_offer(self, campaign_id: int, offer_id: int, version: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
+        self._check_not_syncing(campaign)
         self._check_version(campaign, version)
         rows = [dict(row) for row in (campaign.draft or campaign.server_snapshot)]
         existing = next((row for row in rows if int(row["offer_id"]) == offer_id), None)
@@ -391,6 +401,7 @@ class CampaignService:
 
     def remove_offer(self, campaign_id: int, offer_id: int, version: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
+        self._check_not_syncing(campaign)
         self._check_version(campaign, version)
         rows = [dict(row) for row in (campaign.draft or campaign.server_snapshot)]
         row = next((item for item in rows if int(item["offer_id"]) == offer_id), None)
@@ -401,6 +412,7 @@ class CampaignService:
 
     def bring_back(self, campaign_id: int, offer_id: int, version: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
+        self._check_not_syncing(campaign)
         self._check_version(campaign, version)
         rows = [dict(row) for row in (campaign.draft or campaign.server_snapshot)]
         row = next((item for item in rows if int(item["offer_id"]) == offer_id), None)
@@ -411,6 +423,7 @@ class CampaignService:
 
     def cancel(self, campaign_id: int, version: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
+        self._check_not_syncing(campaign)
         self._check_version(campaign, version)
         campaign.draft = None
         campaign.last_error = None
@@ -421,8 +434,7 @@ class CampaignService:
     def push(self, campaign_id: int, version: int) -> Campaign:
         campaign = self._campaign(campaign_id, lock=True)
         self._check_version(campaign, version)
-        if campaign.syncing:
-            raise ConflictError("push_in_progress", "A push is already in progress")
+        self._check_not_syncing(campaign)
         if campaign.draft is None:
             raise ConflictError("draft_not_dirty", "There are no local changes to push")
         active = [row for row in campaign.draft if row["state"] == "active"]
