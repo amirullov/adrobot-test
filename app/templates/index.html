@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Campaigns · Adrobot{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Campaign operations</p>
+  <h1>Create and edit Keitaro campaigns without risky manual steps.</h1>
+  <p>Local drafts are durable. Keitaro changes only when you explicitly push.</p>
+</section>
+
+<div class="home-grid">
+  <section class="card">
+    <div class="section-heading">
+      <div><p class="eyebrow">Part 1</p><h2>New campaign</h2></div>
+      <span class="step">2 streams</span>
+    </div>
+    <form id="create-form" class="stack">
+      <label>Campaign name<input name="name" maxlength="255" required placeholder="US · Aurora · Search"></label>
+      <label>Country code<input name="country_code" minlength="2" maxlength="2" required placeholder="US" autocomplete="off"></label>
+      <label>Keitaro offer
+        <input id="create-offer-search" placeholder="Search by name or ID" autocomplete="off">
+        <select id="create-offer" name="offer_id" required><option value="">Loading offers…</option></select>
+      </label>
+      <button class="primary" type="submit">Create campaign</button>
+      <p id="create-status" class="form-status" role="status"></p>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="section-heading"><div><p class="eyebrow">Part 2</p><h2>Existing campaign</h2></div></div>
+    <form id="import-form" class="inline-form">
+      <label>Keitaro campaign ID<input name="keitaro_campaign_id" type="number" min="1" required placeholder="5001"></label>
+      <button type="submit">Import</button>
+    </form>
+    <p class="hint">In fake mode, import campaign <strong>5001</strong>.</p>
+    <div class="campaign-list-heading"><h3>Known locally</h3><button id="refresh-list" class="quiet">Refresh</button></div>
+    <div id="campaign-list" class="campaign-list"><p class="muted">Loading…</p></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/home.js') }}" defer></script>{% endblock %}

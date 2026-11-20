@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Adrobot{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">Adrobot <span>Keitaro wrapper</span></a>
+      <div class="mode mode-{{ keitaro_mode }}">{{ keitaro_mode }} mode</div>
+    </header>
+    <main class="shell">{% block content %}{% endblock %}</main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>
