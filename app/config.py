@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     keitaro_country_filter_name: str = "country"
     keitaro_redirect_action_type: str = "http"
-    keitaro_offer_action_type: str = "offer"
+    keitaro_offer_action_type: str = "http"
 
     @field_validator("keitaro_base_url")
     @classmethod

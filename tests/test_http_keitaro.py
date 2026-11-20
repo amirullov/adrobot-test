@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,23 @@ def test_get_sends_api_key_and_returns_list() -> None:
         return httpx.Response(200, json=[{"id": 1, "name": "Offer", "state": "active"}])
 
     assert make_client(handler).list_offers()[0]["id"] == 1
+
+
+def test_create_stream_uses_stream_endpoint_and_includes_campaign_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/admin_api/v1/streams"
+        assert json.loads(request.content) == {
+            "campaign_id": 42,
+            "schema": "redirect",
+            "name": "US → Google",
+        }
+        return httpx.Response(200, json={"id": 77})
+
+    result = make_client(handler).create_stream(
+        42, {"schema": "redirect", "name": "US → Google"}
+    )
+    assert result["id"] == 77
 
 
 def test_get_retries_transient_status(monkeypatch: pytest.MonkeyPatch) -> None:

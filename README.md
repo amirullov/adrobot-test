@@ -72,7 +72,7 @@ The API key is sent only in the `Api-Key` header and is not included in settings
 The official Admin API reference confirms campaigns, campaign streams, offers, campaign `domain_id`/`group_id`/`traffic_source_id`, stream `offers` and partial stream update via `PUT /streams/{id}`. Keitaro payload semantics can vary by tracker version. Before creating real traffic state:
 
 1. Open the target tracker's built-in Admin API Swagger or inspect a successful Admin UI request as Keitaro recommends.
-2. Confirm stream creation is `POST /campaigns/{id}/streams`.
+2. Confirm stream creation is `POST /streams` with `campaign_id` in the body.
 3. Confirm the country filter payload, redirect action type/payload, and offer action type.
 4. If needed, change only `app/keitaro/payloads.py` and its tests.
 5. Run a smoke test in a dedicated campaign/account.

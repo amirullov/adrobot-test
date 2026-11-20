@@ -151,7 +151,9 @@ class HttpKeitaroClient:
 
     def create_stream(self, campaign_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self._as_dict(
-            self._request("POST", f"/campaigns/{campaign_id}/streams", json=payload),
+            self._request(
+                "POST", "/streams", json={"campaign_id": campaign_id, **payload}
+            ),
             mutating=True,
         )
 

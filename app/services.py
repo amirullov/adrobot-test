@@ -303,8 +303,7 @@ class CampaignService:
         candidates = [
             item
             for item in streams
-            if item.get("offers")
-            or item.get("action_type") == self.settings.keitaro_offer_action_type
+            if item.get("offers") or item.get("schema") == "landings"
         ]
         if len(candidates) != 1:
             raise AppError(

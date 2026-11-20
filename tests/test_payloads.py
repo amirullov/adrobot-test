@@ -18,8 +18,13 @@ def test_payload_builder_keeps_version_sensitive_fields_in_one_place() -> None:
     assert campaign["traffic_source_id"] == 9
 
     google = builder.google_stream(country_code="US")
+    assert google["schema"] == "redirect"
     assert google["filters"] == [{"name": "country", "mode": "accept", "payload": ["US"]}]
     assert google["action_payload"] == "https://www.google.com/"
+
+    offer = builder.offer_stream(offers=[{"offer_id": 101, "share": 100}])
+    assert offer["schema"] == "landings"
+    assert offer["action_type"] == "http"
 
     update = builder.update_offers([{"offer_id": 101, "share": 100}])
     assert update == {"offers": [{"offer_id": 101, "share": 100, "state": "active"}]}

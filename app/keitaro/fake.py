@@ -37,6 +37,7 @@ class FakeKeitaroClient:
                     "id": 6001,
                     "campaign_id": 5001,
                     "name": "US → Google",
+                    "schema": "redirect",
                     "type": "regular",
                     "action_type": "http",
                     "action_payload": "https://www.google.com/",
@@ -48,8 +49,9 @@ class FakeKeitaroClient:
                     "id": 6002,
                     "campaign_id": 5001,
                     "name": "Offers",
+                    "schema": "landings",
                     "type": "default",
-                    "action_type": "offer",
+                    "action_type": "http",
                     "offers": [
                         {"offer_id": 101, "share": 34, "state": "active"},
                         {"offer_id": 102, "share": 33, "state": "active"},

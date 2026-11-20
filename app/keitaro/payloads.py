@@ -26,6 +26,7 @@ class KeitaroPayloadBuilder:
     def google_stream(self, *, country_code: str) -> dict[str, Any]:
         return {
             "name": f"{country_code} → Google",
+            "schema": "redirect",
             "type": "regular",
             "position": 1,
             "state": "active",
@@ -44,6 +45,7 @@ class KeitaroPayloadBuilder:
     def offer_stream(self, *, offers: list[dict[str, int]]) -> dict[str, Any]:
         return {
             "name": "Offers",
+            "schema": "landings",
             "type": "default",
             "position": 2,
             "state": "active",
