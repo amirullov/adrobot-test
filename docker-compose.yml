@@ -14,13 +14,22 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   app:
-    build: .
+    build:
+      context: .
+      target: runtime
     env_file: .env
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    command: ["python", "-m", "pytest", "-W", "error"]
 
 volumes:
   postgres_data:

@@ -125,20 +125,20 @@ Why no queue or distributed lock: Push is user-driven and should return an immed
 - nullable `draft` JSON with the same rows, including locally removed rows;
 - `remote_fingerprint` SHA-256 of editable remote fields;
 - optional `remote_updated_at` diagnostic value;
-- monotonic `draft_version` used by `If-Match`;
+- monotonic `draft_version` sent in mutation bodies or the remove query parameter;
 - `syncing`, `last_error`, timestamps.
 
 `idempotency_records`:
 
 - unique key, operation name, SHA-256 request hash;
-- status (`in_progress`, `succeeded`, `failed`), response JSON and timestamps.
+- status (`in_progress`, `succeeded`, `failed_safe`, `rejected`, `outcome_unknown`), response JSON and timestamps.
 
 Migration `0001_initial` creates both tables and constraints. Alembic reads the same `DATABASE_URL` as the app; application startup never silently calls `create_all`.
 
 ## 7. REST contracts
 
 - `GET /api/health` → process status and configured Keitaro mode, never secrets.
-- `GET /api/offers?q=` → `{items:[{id,name,state}]}`.
+- `GET /api/offers?q=` → `[{id,name,state}]`.
 - `POST /api/campaigns` with `{name,country_code,offer_id}` and required `Idempotency-Key` → 201 campaign view; replay returns the stored result; same key/different body → 409.
 - `GET /api/campaigns` → locally known campaigns.
 - `POST /api/campaigns/import` with `{keitaro_campaign_id}` → local campaign aggregate.
@@ -176,9 +176,11 @@ This is deterministic, integer-only and always totals exactly 100.
 
 ## 10. Reliability, retries and idempotency
 
-HTTP connect/read/write/pool timeouts are explicit. GET requests retry at most twice for connect errors, timeouts, 429 and 5xx with short exponential backoff plus jitter. Mutating POST/PUT requests are not automatically retried because the Admin API documentation does not promise idempotency.
+HTTP connect/read/write/pool timeouts are explicit. GET requests retry at most twice for network errors, timeouts, 408, 429 and selected 5xx responses with short exponential backoff plus jitter. Mutating POST/PUT requests are never automatically retried because the Admin API documentation does not promise idempotency. A mutating network failure, malformed success response, 408 or 5xx has `outcome_unknown=true`, so callers are not encouraged to repeat an operation that may already have applied.
 
-Campaign creation requires an application idempotency key. A completed local record is replayed. A crash after an unconfirmed Keitaro mutation is reported as `creation_outcome_unknown`; an operator must inspect Keitaro before retrying with a new key. The service does not create duplicates to hide uncertainty.
+Campaign creation requires an application idempotency key. Claiming a new key is protected by the database unique constraint; an insert race is rolled back and the winning record is reloaded. A completed local record is replayed. A failure during the read-only offer preflight is `failed_safe` and may retry with the same key. A crash or ambiguous response after a mutating call is recorded as `outcome_unknown` and reported as `creation_outcome_unknown` or `creation_partially_failed`; an operator must inspect Keitaro before using a new key. The service does not create duplicates to hide uncertainty.
+
+Fake Keitaro is deliberately in-process and resets on every process start. The documented startup preparation (`python -m app.startup`, also included in the container command) therefore clears locally mirrored campaigns and idempotency records in fake mode after migrations. This prevents durable database rows from referencing remote objects that vanished with the fake process. HTTP mode never performs this reset.
 
 Push is protected by optimistic `draft_version`, a database row lock and `syncing`. Before PUT, the latest remote editable stream is fingerprinted. A mismatch returns `remote_changed`; the user keeps the draft and may cancel, inspect Keitaro, then Fetch. After PUT, the returned stream is normalized and stored. If the response is ambiguous, the draft remains and a refetch determines the outcome.
 
@@ -186,19 +188,21 @@ Push is protected by optimistic `draft_version`, a database row lock and `syncin
 
 Environment variables: `DATABASE_URL`, `KEITARO_MODE`, `KEITARO_BASE_URL`, `KEITARO_API_KEY`, `KEITARO_DOMAIN_ID`, `KEITARO_GROUP_ID`, `KEITARO_TRAFFIC_SOURCE_ID`, `KEITARO_GOOGLE_URL`, timeout/retry settings, and optional admin URL template.
 
-`.env` is ignored; `.env.example` contains placeholders only. The client adds the key directly to the request header. Logs never include headers, environment dumps or full upstream bodies. Request logging uses operation, local/remote IDs, duration, attempt and sanitized outcome.
+`.env` is ignored; `.env.example` contains placeholders only. The client adds the key directly to the request header. Logs never include headers, environment dumps or full upstream bodies.
 
 ## 12. Logging and observability
 
-Structured JSON logging is preferred in deployed environments and readable text locally. Each request receives/echoes `X-Request-ID`. Keitaro calls log resource path templates, not query secrets. Health checks prove process readiness; DB/Keitaro deep checks are explicit operations to avoid making orchestration depend on a third party.
+Readable text logging is configured for the MVP. Each request receives/echoes `X-Request-ID`. Successful Keitaro calls log method, resource path, status and duration; headers and response bodies are excluded. Structured JSON logging and correlated request IDs inside log records are production follow-ups, not claimed as implemented. Health checks prove process readiness; DB/Keitaro deep checks are explicit operations to avoid making orchestration depend on a third party.
 
 ## 13. Test strategy
 
 - pure unit tests: shares for 0/1/3/4/5 and stable fingerprints;
 - payload tests: campaign, Google stream and offer stream shapes at the compatibility boundary;
-- service/API tests with fake Keitaro: create/idempotent replay, draft transitions, cancel, successful push, failed push retains draft, double/stale push and remote conflict;
+- service/API tests with fake Keitaro: JSON-safe validation, create/idempotent replay, insert-race handling, safe preflight retry, ambiguous mutation outcome, draft transitions, cancel, successful push, failed push retains draft, double/stale push and remote conflict;
+- `HttpKeitaroClient` tests with `MockTransport`: headers, GET retries, no mutation retry, status mapping, timeout/network failures, malformed JSON and unexpected success shapes;
+- startup tests: fake mode clears the local mirror while HTTP mode preserves it;
 - migration smoke test: upgrade an empty database to head;
-- static checks: Ruff and mypy on application/tests;
+- static checks: Ruff on application/tests and strict mypy on application code;
 - browser smoke: create campaign, edit offers, cancel and push in fake mode.
 
 Real Keitaro testing is a separate, opt-in smoke script because it creates external state. It must use a dedicated tracker and explicit IDs.
@@ -210,7 +214,8 @@ app/                 FastAPI application
   keitaro/           real/fake clients and payload compatibility boundary
   templates/ static/ browser UI
 alembic/             versioned schema migrations
-tests/               unit and API tests
+tests/               unit, API, transport and concurrency tests
+requirements*.lock   pinned runtime and test dependencies
 SDD.md               this document
 README.md             setup, operation and trade-offs
 Dockerfile
@@ -231,7 +236,7 @@ pyproject.toml
 
 ## 16. Risks and acceptance criteria
 
-Primary risk is Keitaro version-specific stream payloads. It is isolated, documented and covered by fake/payload tests, but only a target-account smoke test closes it. Partial campaign creation is another risk; the result reports created IDs and does not perform undocumented destructive compensation. SQLite test concurrency differs from PostgreSQL, so the guarded Push path is also exercised with Compose PostgreSQL before delivery.
+Primary risk is Keitaro version-specific stream payloads. It is isolated, documented and covered by fake/payload tests, but only a target-account smoke test closes it. Partial campaign creation is another risk; the result reports created IDs and does not perform undocumented destructive compensation. The deterministic concurrency regression test uses SQLite WAL plus the same database unique constraint; final migration and live behavior are also exercised against Compose PostgreSQL, but a high-load PostgreSQL race test remains outside this MVP.
 
 Accepted when:
 
@@ -247,6 +252,3 @@ Accepted when:
 - tests and static checks pass;
 - README distinguishes verified Keitaro API facts from deployment assumptions.
 
-## 17. Honest use of AI
-
-AI helps explore architecture alternatives, draft code and tests, enumerate edge cases, review the result and improve documentation. The developer remains responsible for manually verifying the target Keitaro API, stream business rules, share math, migrations, failure behavior, secret handling, tests and a real end-to-end launch. Generated code is kept only when it can be explained and defended in an interview.

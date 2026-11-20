@@ -1,9 +1,11 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.keitaro.base import KeitaroError
 from app.keitaro.fake import FakeKeitaroClient
-from app.models import Campaign
+from app.models import Campaign, IdempotencyRecord
 
 
 def import_demo(client: TestClient) -> dict[str, object]:
@@ -181,3 +183,101 @@ def test_zero_active_offers_cannot_be_pushed(client: TestClient) -> None:
     )
     assert pushed.status_code == 422
     assert pushed.json()["error"]["code"] == "empty_offer_stream"
+
+
+def test_custom_validation_error_is_json_safe(client: TestClient) -> None:
+    response = client.post(
+        "/api/campaigns",
+        json={"name": "   ", "country_code": "USA", "offer_id": 101},
+        headers={"Idempotency-Key": "validation-error-001"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["retryable"] is False
+    assert len(body["error"]["details"]["errors"]) == 2
+
+
+def test_uncaught_keitaro_error_has_stable_api_shape(
+    client: TestClient,
+    fake_keitaro: FakeKeitaroClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> list[dict[str, object]]:
+        raise KeitaroError(
+            "upstream_timeout",
+            "Keitaro did not respond in time",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(fake_keitaro, "list_offers", fail)
+    response = client.get("/api/offers")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": {
+            "code": "upstream_timeout",
+            "message": "Keitaro did not respond in time",
+            "retryable": True,
+            "details": {"outcome_unknown": False},
+        }
+    }
+
+
+def test_preflight_failure_can_retry_with_same_idempotency_key(
+    client: TestClient,
+    fake_keitaro: FakeKeitaroClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = fake_keitaro.list_offers
+    attempts = 0
+
+    def fail_once() -> list[dict[str, object]]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise KeitaroError("upstream_timeout", "temporary failure", retryable=True)
+        return original()
+
+    monkeypatch.setattr(fake_keitaro, "list_offers", fail_once)
+    payload = {"name": "Retry safe", "country_code": "US", "offer_id": 101}
+    headers = {"Idempotency-Key": "preflight-retry-001"}
+
+    first = client.post("/api/campaigns", json=payload, headers=headers)
+    second = client.post("/api/campaigns", json=payload, headers=headers)
+
+    assert first.status_code == 502
+    assert first.json()["error"]["details"]["outcome_unknown"] is False
+    assert second.status_code == 201
+    with session_factory() as session:
+        record = session.scalar(select(IdempotencyRecord))
+        assert record is not None
+        assert record.status == "succeeded"
+
+
+def test_unknown_mutation_outcome_blocks_duplicate_creation(
+    client: TestClient,
+    fake_keitaro: FakeKeitaroClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def ambiguous(_payload: dict[str, object]) -> dict[str, object]:
+        raise KeitaroError(
+            "upstream_unavailable",
+            "server error",
+            outcome_unknown=True,
+        )
+
+    monkeypatch.setattr(fake_keitaro, "create_campaign", ambiguous)
+    payload = {"name": "Unknown outcome", "country_code": "US", "offer_id": 101}
+    headers = {"Idempotency-Key": "unknown-outcome-001"}
+
+    first = client.post("/api/campaigns", json=payload, headers=headers)
+    second = client.post("/api/campaigns", json=payload, headers=headers)
+
+    assert first.status_code == 502
+    assert first.json()["error"]["code"] == "creation_outcome_unknown"
+    assert first.json()["error"]["details"]["outcome_unknown"] is True
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "creation_already_attempted"

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.api import router
 from app.config import Settings, get_settings
 from app.errors import AppError
-from app.keitaro.base import KeitaroClient
+from app.keitaro.base import KeitaroClient, KeitaroError
 from app.keitaro.fake import FakeKeitaroClient
 from app.keitaro.http import HttpKeitaroClient
 
@@ -79,7 +80,22 @@ def create_app(
                     "code": "validation_error",
                     "message": "Check the highlighted input values",
                     "retryable": False,
-                    "details": {"errors": exc.errors()},
+                    "details": {"errors": jsonable_encoder(exc.errors())},
+                }
+            },
+        )
+
+    @application.exception_handler(KeitaroError)
+    async def handle_keitaro_error(request: Request, exc: KeitaroError) -> JSONResponse:
+        del request
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "retryable": exc.retryable and not exc.outcome_unknown,
+                    "details": {"outcome_unknown": exc.outcome_unknown},
                 }
             },
         )

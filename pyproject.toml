@@ -33,6 +33,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --maxfail=1"
+cache_dir = "/tmp/pytest-cache"
 
 [tool.ruff]
 line-length = 100

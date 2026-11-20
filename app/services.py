@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -127,29 +128,52 @@ class CampaignService:
             for item in offers[:100]
         ]
 
-    def create_campaign(self, data: CampaignCreate, idempotency_key: str) -> Campaign:
-        body = data.model_dump()
-        body_hash = request_hash(body)
-        existing = self.db.scalar(
-            select(IdempotencyRecord).where(
-                IdempotencyRecord.operation == "create_campaign",
-                IdempotencyRecord.key == idempotency_key,
-            )
+    def _find_creation_record(
+        self, idempotency_key: str, *, lock: bool = False
+    ) -> IdempotencyRecord | None:
+        statement = select(IdempotencyRecord).where(
+            IdempotencyRecord.operation == "create_campaign",
+            IdempotencyRecord.key == idempotency_key,
         )
-        if existing:
-            if existing.request_hash != body_hash:
-                raise ConflictError(
-                    "idempotency_key_reused",
-                    "This idempotency key was already used for a different request",
-                )
-            if existing.status == "succeeded" and existing.response:
-                return self._campaign(int(existing.response["local_campaign_id"]))
+        if lock:
+            statement = statement.with_for_update()
+        return self.db.scalar(statement)
+
+    def _resolve_creation_record(
+        self, record: IdempotencyRecord, body_hash: str
+    ) -> tuple[IdempotencyRecord, Campaign | None]:
+        if record.request_hash != body_hash:
             raise ConflictError(
-                "creation_already_attempted",
-                "This creation key already has an unfinished or failed attempt; "
-                "inspect Keitaro before using a new key",
-                details=existing.response,
+                "idempotency_key_reused",
+                "This idempotency key was already used for a different request",
             )
+        if record.status == "succeeded" and record.response:
+            return record, self._campaign(int(record.response["local_campaign_id"]))
+        if record.status == "failed_safe":
+            record.status = "in_progress"
+            record.response = None
+            self.db.commit()
+            return record, None
+        if record.status == "rejected":
+            response = record.response or {}
+            raise AppError(
+                str(response.get("code", "creation_rejected")),
+                str(response.get("message", "Campaign creation was rejected")),
+                status_code=422,
+            )
+        raise ConflictError(
+            "creation_already_attempted",
+            "This creation key is in progress or has an uncertain outcome; "
+            "inspect Keitaro before using a new key",
+            details=record.response,
+        )
+
+    def _claim_creation(
+        self, idempotency_key: str, body_hash: str
+    ) -> tuple[IdempotencyRecord, Campaign | None]:
+        existing = self._find_creation_record(idempotency_key, lock=True)
+        if existing is not None:
+            return self._resolve_creation_record(existing, body_hash)
 
         record = IdempotencyRecord(
             operation="create_campaign",
@@ -158,13 +182,47 @@ class CampaignService:
             status="in_progress",
         )
         self.db.add(record)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            winner = self._find_creation_record(idempotency_key, lock=True)
+            if winner is None:
+                raise
+            return self._resolve_creation_record(winner, body_hash)
+        return record, None
 
-        offers = self._offers_by_id()
+    def create_campaign(self, data: CampaignCreate, idempotency_key: str) -> Campaign:
+        body = data.model_dump()
+        body_hash = request_hash(body)
+        record, completed = self._claim_creation(idempotency_key, body_hash)
+        if completed is not None:
+            return completed
+
+        try:
+            offers = self._offers_by_id()
+        except KeitaroError as exc:
+            record.status = "failed_safe"
+            record.response = {
+                "code": exc.code,
+                "created": {},
+                "outcome_unknown": False,
+            }
+            self.db.commit()
+            raise AppError(
+                exc.code,
+                f"Keitaro preflight failed: {exc.message}. No remote changes were attempted.",
+                status_code=502,
+                retryable=exc.retryable,
+                details=record.response,
+            ) from exc
         offer = offers.get(data.offer_id)
         if offer is None or offer.get("state") != "active":
-            record.status = "failed"
-            record.response = {"code": "offer_not_found"}
+            record.status = "rejected"
+            record.response = {
+                "code": "offer_not_found",
+                "message": "The selected active offer does not exist",
+            }
             self.db.commit()
             raise AppError(
                 "offer_not_found",
@@ -192,17 +250,29 @@ class CampaignService:
             )
             created_ids["offer_stream_id"] = int(offer_stream["id"])
         except KeitaroError as exc:
-            record.status = "failed"
-            record.response = {"code": exc.code, "created": created_ids}
+            outcome_unknown = bool(created_ids) or exc.outcome_unknown
+            record.status = "outcome_unknown" if outcome_unknown else "failed_safe"
+            record.response = {
+                "code": exc.code,
+                "created": created_ids,
+                "outcome_unknown": outcome_unknown,
+            }
             self.db.commit()
+            error_code = (
+                "creation_partially_failed"
+                if created_ids
+                else "creation_outcome_unknown"
+                if exc.outcome_unknown
+                else exc.code
+            )
             raise AppError(
-                "creation_partially_failed" if created_ids else exc.code,
+                error_code,
                 "Campaign creation did not complete. Inspect Keitaro before retrying."
-                if created_ids or exc.outcome_unknown
+                if outcome_unknown
                 else exc.message,
                 status_code=502,
-                retryable=False,
-                details={"created": created_ids},
+                retryable=exc.retryable and not outcome_unknown,
+                details=record.response,
             ) from exc
 
         campaign = Campaign(
@@ -394,12 +464,22 @@ class CampaignService:
             self.db.commit()
             raise AppError(
                 exc.code,
-                f"Push failed: {exc.message}. The local draft was kept.",
+                (
+                    "Push outcome is unknown; inspect Keitaro before trying again. "
+                    "The local draft was kept."
+                    if exc.outcome_unknown
+                    else f"Push failed: {exc.message}. The local draft was kept."
+                ),
                 status_code=502,
-                retryable=exc.retryable,
+                retryable=exc.retryable and not exc.outcome_unknown,
+                details={"outcome_unknown": exc.outcome_unknown},
             ) from exc
 
-        campaign.server_snapshot = self._normalize_stream(updated, self._offers_by_id())
+        draft_offers = {
+            int(row["offer_id"]): {"id": int(row["offer_id"]), "name": str(row["name"])}
+            for row in campaign.draft
+        }
+        campaign.server_snapshot = self._normalize_stream(updated, draft_offers)
         campaign.draft = None
         campaign.remote_fingerprint = stream_fingerprint(updated)
         campaign.remote_updated_at = updated.get("updated_at")

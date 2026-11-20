@@ -33,7 +33,7 @@ docker compose up --build
 
 Open [http://localhost:8000](http://localhost:8000). The example configuration starts in `KEITARO_MODE=fake`; import campaign `5001` to try the editor immediately.
 
-The app container waits for PostgreSQL, applies `alembic upgrade head`, then starts Uvicorn. Stop with `Ctrl+C`; remove containers with `docker compose down`. The named PostgreSQL volume is retained. Use `docker compose down -v` only when you intentionally want to erase local database data.
+The app container waits for PostgreSQL, applies `alembic upgrade head`, prepares the selected mode, then starts Uvicorn. Fake Keitaro is intentionally in-memory, so fake-mode local campaigns and idempotency records are cleared whenever the app container starts; this prevents durable PostgreSQL rows from pointing at fake campaigns that disappeared during a restart. HTTP mode never performs this cleanup. Stop with `Ctrl+C`; remove containers with `docker compose down`. Use `docker compose down -v` only when you intentionally want to erase the PostgreSQL volume.
 
 ## Local Python start
 
@@ -46,10 +46,11 @@ pip install -e ".[dev]"
 Copy-Item .env.example .env
 # Set DATABASE_URL to a reachable PostgreSQL URL, then:
 alembic upgrade head
+python -m app.startup
 uvicorn app.main:app --reload
 ```
 
-For a short no-Docker demo, set `DATABASE_URL=sqlite:///./adrobot.db`; migrations support it.
+For a short no-Docker demo, set `DATABASE_URL=sqlite:///./adrobot.db`; migrations support it. Keep the documented `python -m app.startup` step so fake-mode rows cannot outlive the in-process fake tracker.
 
 ## Real Keitaro configuration
 
@@ -95,14 +96,17 @@ Always review generated migrations before applying them.
 
 ## Tests and checks
 
+The runtime image contains only pinned production dependencies and application files. The separate `test` target adds test tools and sources.
+
 ```powershell
-docker compose build app
-docker compose run --rm app sh -lc "COVERAGE_FILE=/tmp/.coverage coverage run --source=app -m pytest && COVERAGE_FILE=/tmp/.coverage coverage report -m"
-docker compose run --rm app ruff check app tests alembic
-docker compose run --rm app mypy app
+docker compose --profile test build test
+docker compose --profile test run --rm test python -m pytest -W error
+docker compose --profile test run --rm test sh -lc "COVERAGE_FILE=/tmp/.coverage coverage run --source=app -m pytest -W error && COVERAGE_FILE=/tmp/.coverage coverage report --fail-under=80 -m"
+docker compose --profile test run --rm test ruff check --no-cache app tests alembic
+docker compose --profile test run --rm test mypy --cache-dir=/tmp/mypy app
 ```
 
-Tests cover share allocation, payload construction, idempotent campaign creation, all draft transitions, successful and failed Push, retained drafts, stale versions and remote conflicts.
+Tests cover share allocation, payload construction, JSON-safe validation errors, idempotent and concurrent campaign creation, safe/uncertain failure states, HTTP retries and status mapping, unexpected upstream responses, fake-mode reset, all draft transitions, successful and failed Push, retained drafts, stale versions and remote conflicts.
 
 ## REST API
 
@@ -125,6 +129,8 @@ Errors have a stable shape:
 
 - Mutating Keitaro requests are not automatically retried because the upstream API does not document idempotency.
 - Campaign creation requires an idempotency key. A successful replay returns the same local campaign.
+- A Keitaro failure during the read-only offer preflight is recorded as safe to retry with the same key because no remote mutation was attempted.
+- A timeout, network failure, malformed success response, HTTP 408 or 5xx after POST/PUT is treated as an unknown outcome. The application does not suggest an automatic retry that could duplicate a campaign.
 - If creation partially succeeds, the response includes known created IDs and asks the operator to inspect Keitaro; the service does not perform an undocumented destructive rollback.
 - A failed Push keeps the draft.
 - If Keitaro changed after Fetch, Push returns `409 remote_changed` and keeps the draft.
@@ -139,12 +145,11 @@ app/services.py            business rules and transaction boundaries
 app/keitaro/http.py        real Admin API transport
 app/keitaro/fake.py        local deterministic tracker
 app/keitaro/payloads.py    version-sensitive Keitaro assumptions
+app/startup.py             fake-mode local mirror reset
 app/templates, app/static  browser UI
 alembic/                   migrations
 tests/                     unit and API behavior
+requirements*.lock         pinned runtime/test environments
 SDD.md                     detailed design and acceptance criteria
 ```
 
-## AI use
-
-AI was used for architecture alternatives, draft implementation, tests, edge-case review and documentation. A developer must still verify the target Keitaro payloads, stream behavior, allocation math, migration, error paths, secret handling, tests and a real launch. The project intentionally avoids layers and infrastructure that the author could not justify in an interview.
